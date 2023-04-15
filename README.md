@@ -1,4 +1,6 @@
 # k8s-yc-terrafrom-ansible
+Развертываем кластер Kubernetes в Yandex Cloud с 1 master и 2 worker нодами.
+
 В корень проекта необходимо добавить открытый и закрытый ключи, назвать их id_rsa.pub и id_rsa.
 Также надо заполнить vars.tf своими значениями. 
 После выполнения terraform скриптов создастся 3 ВМ в облаке Yandex Cloud.
