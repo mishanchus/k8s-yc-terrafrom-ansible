@@ -1,0 +1,15 @@
+k8s-master01 ansible_host="${master_ip}"
+k8s-worker01 ansible_host="${worker01_ip}"
+k8s-worker02 ansible_host="${worker02_ip}"
+
+[masters]
+k8s-master01
+
+[workers]
+k8s-worker01
+k8s-worker02
+
+
+[all:vars]
+ansible_ssh_common_args='-o StrictHostKeyChecking=no'
+ansible_user=debian

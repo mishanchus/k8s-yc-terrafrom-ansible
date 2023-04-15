@@ -1,0 +1,215 @@
+---
+- name: Kubernetes cluster deploy by kubeadm
+  hosts: all
+  become: yes
+  become_method: sudo
+  tasks:
+
+  - name: Install packages
+    apt:
+      update_cache: yes
+      state: latest
+      pkg: 
+      - vim
+      - bash-completion
+      - wget 
+      - git 
+      - curl 
+      - apt-transport-https 
+      - ca-certificates 
+      - gnupg2 
+      - lsb-release 
+      - tmux 
+      - nfs-common 
+      - software-properties-common 
+      - git 
+      - python3-pip
+      - unzip
+
+  - name: Load modules br_netfilter
+    community.general.modprobe:
+      name: br_netfilter
+      state: present
+
+  - name: Load module overlay
+    community.general.modprobe:
+      name: overlay
+      state: present
+
+  - name: Configuring modules
+    ansible.builtin.blockinfile:
+      path: /etc/modules
+      block: |
+        br_netfilter
+        overlay
+  
+  - name: Configuring sysctl.conf
+    ansible.builtin.blockinfile:
+      path: /etc/sysctl.conf
+      block: |
+        net.bridge.bridge-nf-call-ip6tables = 1
+        net.bridge.bridge-nf-call-iptables = 1
+        net.ipv4.ip_forward=1
+
+  - name: Configuring /etc/hosts
+    ansible.builtin.blockinfile:
+      path: /etc/hosts
+      block: |
+        10.0.0.5 ceph
+        10.0.0.3 k8s-master01
+        10.0.0.12 k8s-worker02
+        10.0.0.11 k8s-worker01
+
+  - name: add private key
+    copy: src=./id_rsa dest=/home/debian/.ssh owner=debian mode='600'
+
+  - name: Do command
+    shell: sudo sysctl --system
+
+  - name: apt key add
+    ansible.builtin.apt_key:
+      url: https://download.docker.com/linux/debian/gpg
+      state: present
+
+  - name: add repo
+    ansible.builtin.apt_repository:
+      repo: deb [arch=amd64] https://download.docker.com/linux/debian bullseye stable
+      state: present
+
+  - name: install containerd
+    apt:
+      update_cache: yes
+      state: latest
+      name: containerd
+
+  - name: create folder /etc/containerd
+    ansible.builtin.file:
+      path: /etc/containerd
+      state: directory
+
+  - name: Copy config file
+    copy: src=config.toml dest=/etc/containerd
+
+  - name: enable service
+    service: name=containerd enabled=true state=started
+
+
+  - name: Download crictl
+    ansible.builtin.get_url:
+      url: https://github.com/kubernetes-sigs/cri-tools/releases/download/v1.24.1/crictl-v1.24.1-linux-amd64.tar.gz
+      dest: .
+
+  - name: Unarchive crictl
+    shell: tar zxvf crictl-v1.24.1-linux-amd64.tar.gz -C /usr/local/bin
+
+  - name: clean up
+    file: path=./crictl-v1.24.1-linux-amd64.tar.gz state=absent
+    
+  - name: Configuring crictl.yaml
+    ansible.builtin.blockinfile:
+      path: /etc/crictl.yaml
+      create: yes
+      block: |
+        runtime-endpoint: unix:///var/run/containerd/containerd.sock
+        image-endpoint: unix:///var/run/containerd/containerd.sock
+        timeout: 30
+        debug: false
+
+  - name: Download nerdctl
+    ansible.builtin.get_url:
+      url: https://github.com/containerd/nerdctl/releases/download/v0.21.0/nerdctl-0.21.0-linux-amd64.tar.gz
+      dest: .
+  
+  - name: extract nerdctl
+    shell: tar zxvf nerdctl-0.21.0-linux-amd64.tar.gz -C /usr/local/bin
+
+  - name: clear nerdctl
+    file: path=./nerdctl-0.21.0-linux-amd64.tar.gz state=absent
+
+  - name: add apt-key
+    ansible.builtin.apt_key:
+      url: https://packages.cloud.google.com/apt/doc/apt-key.gpg
+      state: present
+
+  - name: add repo k8s
+    ansible.builtin.apt_repository:
+      repo: deb [arch=amd64] https://apt.kubernetes.io/ kubernetes-xenial main
+      state: present
+
+  - name: instal k8s things
+    apt:       
+      update_cache: yes
+      pkg: 
+      - kubelet=1.23.9-00
+      - kubeadm=1.23.9-00
+      - kubectl=1.23.9-00
+
+  - name: enable service
+    service: name=kubelet enabled=true state=started
+
+  - name: reboot
+    reboot:
+    when: ansible_hostname != "k8s-master01"
+
+  - block: ##############  when: ansible_hostname == "k8s-master01" ###############
+
+    - name: helm download
+      ansible.builtin.get_url:
+        url: https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3
+        dest: ./get_helm.sh
+
+    - name: chmod
+      file: 
+        path: ./get_helm.sh
+        mode: '700'
+
+    - name: ./get_helm.sh
+      shell: ./get_helm.sh
+
+    - name: reboot
+      reboot:
+
+    - name: initialize master
+      shell: kubeadm init --upload-certs | tee -a kube_init.log
+
+    - name: mkdir -p /home/debian/.kube
+      file:
+        path: /home/debian/.kube
+        state: directory
+
+    - name: copy config
+      copy: src=/etc/kubernetes/admin.conf dest=/home/debian/.kube/config owner=debian remote_src=yes
+
+    - name: Copy calico file
+      copy: src=calico.yml dest=~/calico.yml
+
+    - name: sleep
+      ansible.builtin.pause:
+        seconds: 20
+
+    - name: install calico
+      shell: kubectl apply --kubeconfig=/home/debian/.kube/config -f ~/calico.yml
+
+    - name: untaint
+      shell: kubectl taint --kubeconfig=/home/debian/.kube/config nodes k8s-master01 node-role.kubernetes.io/master:NoSchedule-
+      ignore_errors: yes
+
+    - name: get token
+      shell: kubeadm token create --print-join-command
+      register: result
+
+    - name: autocomplete
+      ansible.builtin.lineinfile:
+        path: /home/debian/.bashrc
+        line: source <(kubectl completion bash)
+
+    - name: add worker nodes
+      shell: "{{ result.stdout }}"
+      delegate_to: k8s-worker01
+
+    - name: add worker nodes
+      shell: "{{ result.stdout }}"
+      delegate_to: k8s-worker02
+      
+    when: ansible_hostname == "k8s-master01"
+
